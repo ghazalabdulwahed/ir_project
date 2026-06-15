@@ -3,7 +3,8 @@ import pandas as pd
 from collections import Counter, defaultdict
 import re
 import os
-
+from sklearn.metrics.pairwise import cosine_similarity
+from ltr_service import rerank
 # ==========================================
 # 1. إعدادات الصفحة والتصميم والـ CSS (طالبة 4)
 # ==========================================
@@ -52,40 +53,101 @@ if 'word_freq' not in st.session_state:
 # =========================================================
 @st.cache_resource(show_spinner="⏳ جاري تحميل البيانات المدمجة وبناء الفهارس...")
 def load_all_services():
-    # 🛑 تأكدي أن هذا الاسم مطابق تماماً لاسم ملف الـ CSV المدمج الموجود عندك بالمجلد
-    csv_name = "quora_cleaned_sample.csv" 
+
+    import numpy as np
+    from sklearn.cluster import KMeans
+
+    csv_name = "quora_cleaned_sample.csv"
     embeddings_name = "quora_embeddings.npy"
 
+    # =========================
+    # تحميل البيانات
+    # =========================
     try:
-        df = pd.read_csv(csv_name)
-    except:
-        st.error(f"❌ خطأ: ملف البيانات {csv_name} غير موجود بالمجلد!")
-        return None, None, None, None, None, None, None
+        df = pd.read_csv(csv_name).reset_index(drop=True)
+    except Exception as e:
+        st.error(f"❌ خطأ في تحميل CSV: {e}")
+        return None, None, None, None, None, None, None, None, None
 
-    # حساب تكرار الكلمات لخدمة سالي وتخزينه في الـ session_state لمنع الـ NameError
+    # تنظيف البيانات
+    df = df[df["cleaned_text"].notna()].reset_index(drop=True)
+
+    # word frequency
     all_text = " ".join(df["cleaned_text"].astype(str)).split()
     st.session_state.word_freq = Counter(all_text)
 
-    # أ) تحميل محرك بحث ماريا (BM25)
+    # =========================
+    # BM25
+    # =========================
     from retrieval_service import build_inverted_index, prepare_bm25
+
     inverted_index = build_inverted_index(df)
     bm25_idf, avg_doc_length = prepare_bm25(df, inverted_index)
 
-    # ب) تحميل محرك غزل الذكي (BERT)
+    # =========================
+    # BERT embeddings
+    # =========================
     from embedding_service import SemanticSearchService
-    bert_service = SemanticSearchService()
-    load_emb = os.path.exists(embeddings_name)
-    bert_service.initialize_service(load_embeddings=load_emb)
 
-    # ج) تحميل خدمات لمى (Evaluation & RAG)
+    bert_service = SemanticSearchService()
+    bert_service.initialize_service(load_embeddings=os.path.exists(embeddings_name))
+
+    embeddings = bert_service.all_embeddings
+
+    # =========================
+    # SAFE CHECK
+    # =========================
+    if embeddings is None or len(embeddings) == 0:
+        st.error("❌ لا توجد embeddings صالحة!")
+        return None, None, None, None, None, None, None, None, None
+
+    embeddings = np.array(embeddings)
+
+    # =========================
+    # توحيد الحجم
+    # =========================
+    min_len = min(len(df), len(embeddings))
+    df = df.iloc[:min_len].reset_index(drop=True)
+    embeddings = embeddings[:min_len]
+
+    # =========================
+    # Topic Modeling (KMeans)
+    # =========================
+    if len(embeddings) < 2:
+        df["topic"] = 0
+        kmeans = None
+    else:
+        n_clusters = min(5, len(embeddings))
+        kmeans = KMeans(
+            n_clusters=n_clusters,
+            random_state=42,
+            n_init=10
+        )
+        df["topic"] = kmeans.fit_predict(embeddings)
+
+    # =========================
+    # Vector Store
+    # =========================
+    vector_store = {
+        "docs": df["cleaned_text"].tolist(),
+        "embeddings": embeddings
+    }
+
+    # =========================
+    # RAG + Evaluation
+    # =========================
     from lama_evaluation_rag_service import EvaluationService, RAGService
+
     eval_service = EvaluationService()
     rag_service = RAGService()
 
-    return df, inverted_index, bm25_idf, avg_doc_length, bert_service, eval_service, rag_service
+    return df, inverted_index, bm25_idf, avg_doc_length, bert_service, eval_service, rag_service, vector_store, kmeans
+services = load_all_services()
 
-df, inverted_index, bm25_idf, avg_doc_length, bert_service, eval_service, rag_service = load_all_services()
+if services[0] is None:
+    st.stop()
 
+df, inverted_index, bm25_idf, avg_doc_length, bert_service, eval_service, rag_service, vector_store, kmeans = services
 # =========================================================
 # 3. خدمات الطالبة 3 (سالي) - معالجة وتوسيع الاستعلام واقتراح الكلمات
 # =========================================================
@@ -129,7 +191,18 @@ def process_query_service(query, expand=True):
         if w in local_syns:
             expanded.update(local_syns[w])
     return " ".join(expanded)
+def vector_search(query_embedding, df, vector_store, k=5):
+    scores = cosine_similarity([query_embedding], vector_store["embeddings"])[0]
+    top_idx = scores.argsort()[::-1][:k]
 
+    return [
+        {
+            "doc_id": df.iloc[i]["doc_id"],
+            "score": float(scores[i]),
+            "text": df.iloc[i]["cleaned_text"]
+        }
+        for i in top_idx
+    ]
 # =========================================================
 # 4. معمارية الـ API Gateway المتكاملة (شغلك الأساسي يا مايا)
 # =========================================================
@@ -199,20 +272,46 @@ def api_gateway_complete(query, model, bm25_k1, bm25_b, expand_flag):
         for doc_id, score in hybrid_res[:10]:
             text = df[df["doc_id"] == doc_id].iloc[0]["cleaned_text"]
             retrieved_results.append({"doc_id": doc_id, "score": round(score, 6), "text": text})
-
     elif "Cascade" in model:
         try:
             cascade_res = serial_cascade_hybrid_search(
-                query=processed_query, df=df, bert_service=bert_service,
-                inverted_index=inverted_index, bm25_idf=bm25_idf,
-                avg_doc_length=avg_doc_length, k1=bm25_k1, b=bm25_b,
-                top_n_bm25=500, top_k_final=10
+                query=processed_query,
+                df=df,
+                bert_service=bert_service,
+                inverted_index=inverted_index,
+                bm25_idf=bm25_idf,
+                avg_doc_length=avg_doc_length,
+                k1=bm25_k1,
+                b=bm25_b,
+                top_n_bm25=500,
+                top_k_final=10
             )
+
             retrieved_results = cascade_res
             raw_retrieved_ids = [res["doc_id"] for res in cascade_res]
+
         except Exception as e:
             st.error(f"⚠️ فشل تشغيل البحث التسلسلي المتقدم: {str(e)}")
 
+    elif "LTR Ranker" in model:
+
+        candidate_results = serial_cascade_hybrid_search(
+            query=processed_query,
+            df=df,
+            bert_service=bert_service,
+            inverted_index=inverted_index,
+            bm25_idf=bm25_idf,
+            avg_doc_length=avg_doc_length,
+            k1=bm25_k1,
+            b=bm25_b,
+            top_n_bm25=500,
+            top_k_final=10
+        )
+
+        final_results = rerank(candidate_results)
+
+        retrieved_results = final_results
+        raw_retrieved_ids = [res["doc_id"] for res in final_results]
     mock_relevant_ids = raw_retrieved_ids[:2] if len(raw_retrieved_ids) >= 2 else raw_retrieved_ids
     eval_metrics = {}
     if raw_retrieved_ids:
@@ -232,7 +331,8 @@ search_type = st.sidebar.radio(
         "📊 BM25 Probabilistic", 
         "🧠 Semantic Search (BERT)", 
         "⛓️ Hybrid (RRF) - بحث هجين تفرعي",
-        "⚡ Hybrid (Cascade) - بحث تسلسلي (BM25 + BERT Re-rank)"
+        "⚡ Hybrid (Cascade) - بحث تسلسلي (BM25 + BERT Re-rank)",
+         "🏆 LTR Ranker"
     ], 
     label_visibility="collapsed"
 )
