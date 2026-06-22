@@ -1,22 +1,26 @@
 # -*- coding: utf-8 -*-
 """
 Project: SOA Search Engine - Academic Project
-Module: Document Indexing & Retrieval Service (TF-IDF & BM25)
+Module: Document Indexing & Retrieval Service (TF-IDF & BM25 using industry-standard libraries)
 Author: Maria Alskal (Student 1 - Data & Core IR Models)
 Date: June 2026
-Description: Production-ready Python service for high-performance indexing, 
-             VSM TF-IDF vector generation, and dynamic BM25 retrieval.
+Description: Production-ready Python service using Scikit-Learn for TF-IDF 
+             and Rank-BM25 for dynamic document retrieval.
 """
 
-import math
 import time
 import pickle
-from collections import defaultdict, Counter
+import os
 import pandas as pd
 import nltk
 from nltk.corpus import stopwords
 from nltk.stem import PorterStemmer
 from nltk.tokenize import word_tokenize
+
+# مكاتب سوق العمل القياسية والمطلوبة
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
+from rank_bm25 import BM25Okapi
 
 # =====================================================================
 # SYSTEM INITIALIZATION & TEXT PREPROCESSING
@@ -27,8 +31,8 @@ nltk.download("stopwords", quiet=True)
 stemmer = PorterStemmer()
 stop_words = set(stopwords.words("english"))
 
-def preprocess_query(text):
-    """Clean, tokenize, and stem the user query to match dataset tokens."""
+def preprocess_text(text):
+    """Clean, tokenize, and stem text for standard representation."""
     tokens = word_tokenize(str(text).lower())
     cleaned_tokens = [
         stemmer.stem(word)
@@ -39,187 +43,127 @@ def preprocess_query(text):
 
 
 # =====================================================================
-# 📅 DAY 1: INVERTED INDEX ARCHITECTURE
+# 📅 INDUSTRY-STANDARD MODELS (TF-IDF & BM25)
 # =====================================================================
-def build_inverted_index_and_stats(df):
-    """
-    Builds the Inverted Index mapping terms to Document IDs.
-    Uses an optimized single-pass loop over the dataframe arrays.
-    """
-    print("⏳ [Day 1] Building Inverted Index and extracting core stats...")
+
+def train_tfidf_vectorizer(corpus):
+    """Trains Scikit-Learn's TF-IDF Vectorizer and transforms the corpus."""
+    print("⏳ [SKLEARN] Generating TF-IDF vectors using Scikit-Learn...")
     start_time = time.time()
     
-    inverted_index = defaultdict(set)
-    doc_lengths = {}
-    doc_term_freqs = {}
+    # استخدام مكتبة sklearn لحساب TF-IDF وبناء المصفوفة المتباعدة (Sparse Matrix)
+    vectorizer = TfidfVectorizer()
+    tfidf_matrix = vectorizer.fit_transform(corpus)
     
-    for doc_id, cleaned_text in zip(df["doc_id"], df["cleaned_text"]):
-        words = str(cleaned_text).split()
-        
-        # 1. Store document length for BM25 normalization
-        doc_lengths[doc_id] = len(words)
-        
-        # 2. Compute local term frequencies for TF-IDF
-        counts = Counter(words)
-        doc_term_freqs[doc_id] = counts
-        
-        # 3. Populate Inverted Index
-        for word in counts.keys():
-            inverted_index[word].add(doc_id)
-            
-    print(f"✔ Day 1 Complete. Vocabulary Size: {len(inverted_index):,} words.")
-    print(f"   Execution time: {time.time() - start_time:.2f} seconds.")
-    return inverted_index, doc_lengths, doc_term_freqs
+    print(f"✔ TF-IDF Matrix shape: {tfidf_matrix.shape}")
+    print(f"✔ TF-IDF computation complete in {time.time() - start_time:.2f} seconds.")
+    return vectorizer, tfidf_matrix
 
 
-# =====================================================================
-# 📅 DAY 2: VECTOR SPACE MODEL (VSM) & TF-IDF WEIGHTING
-# =====================================================================
-def compute_global_idf(df, inverted_index):
-    """Computes dampened global IDF weights for all terms: log(1 + N/df)."""
-    print("⏳ [Day 2] Calculating global IDF weights...")
+def train_bm25_model(corpus):
+    """Initializes the Rank-BM25 model using tokenized text corpus."""
+    print("⏳ [RANK-BM25] Initializing BM25Okapi model from library...")
     start_time = time.time()
-    N = len(df)
-    idf_weights = {}
     
-    for word, doc_ids in inverted_index.items():
-        df_t = len(doc_ids)
-        idf_weights[word] = math.log(1 + (N / df_t))
-        
-    print(f"✔ IDF calculation complete in {time.time() - start_time:.2f} seconds.")
-    return idf_weights
-
-def compute_vsm_tfidf(doc_term_freqs, idf_weights):
-    """Generates TF-IDF sparse vectors for all documents using log(1 + tf) * idf."""
-    print("⏳ [Day 2] Generating TF-IDF sparse vectors...")
-    start_time = time.time()
-    tfidf_vectors = {}
+    # مكتبة rank_bm25 تحتاج الداتا كـ قائمة من الكلمات المتوضعة داخل قائمة
+    tokenized_corpus = [doc.split() for doc in corpus]
+    bm25_model = BM25Okapi(tokenized_corpus)
     
-    for doc_id, term_counts in doc_term_freqs.items():
-        tfidf_vectors[doc_id] = {}
-        for word, count in term_counts.items():
-            tf_smoothed = math.log(1 + count)
-            word_idf = idf_weights.get(word, 0)
-            tfidf_vectors[doc_id][word] = tf_smoothed * word_idf
-            
-    print(f"✔ TF-IDF vectors generated in {time.time() - start_time:.2f} seconds.")
-    return tfidf_vectors
-
-
-# =====================================================================
-# 📅 DAY 3: ADVANCED PROBABILISTIC MODEL (BM25) & SEARCH ENGINE
-# =====================================================================
-def prepare_bm25_weights(df, inverted_index):
-    """Precomputes probabilistic BM25 IDF weights to ensure zero search lag."""
-    print("⏳ [Day 3] Precomputing BM25 probabilistic IDF weights...")
-    start_time = time.time()
-    N = len(df)
-    bm25_idf = {}
-    
-    for word, doc_ids in inverted_index.items():
-        df_term = len(doc_ids)
-        bm25_idf[word] = math.log(((N - df_term + 0.5) / (df_term + 0.5)) + 1)
-        
-    print(f"✔ BM25 IDF weights prepared in {time.time() - start_time:.2f} seconds.")
-    return bm25_idf
-
-def bm25_search_engine(
-    query,
-    inverted_index,
-    bm25_idf,
-    avg_doc_length,
-    doc_lengths,
-    doc_term_freqs,
-    k1=1.5,
-    b=0.75
-):
-    """
-    Executes a high-speed BM25 search over candidate documents using hash-maps.
-    Accepts dynamic k1 and b parameters from the API Gateway / UI.
-    """
-    # Tokenize the query terms directly
-    query_terms = str(query).lower().split()
-    if not query_terms:
-        return []
-        
-    # Boolean Filtering: Get candidate documents containing at least one query term
-    candidate_docs = set()
-    for term in query_terms:
-        if term in inverted_index:
-            candidate_docs.update(inverted_index[term])
-            
-    # Scoring loop over filtered candidates only
-    scores = {}
-    for doc_id in candidate_docs:
-        doc_len = doc_lengths[doc_id]
-        term_freqs = doc_term_freqs[doc_id]
-        score = 0
-        
-        for term in query_terms:
-            if term not in term_freqs:
-                continue
-                
-            tf = term_freqs[term]
-            term_idf = bm25_idf.get(term, 0)
-            
-            numerator = tf * (k1 + 1)
-            denominator = tf + k1 * (1 - b + b * (doc_len / avg_doc_length))
-            
-            score += term_idf * (numerator / denominator)
-            
-        scores[doc_id] = score
-        
-    return sorted(scores.items(), key=lambda x: x[1], reverse=True)
+    print(f"✔ BM25 model initialized in {time.time() - start_time:.2f} seconds.")
+    return bm25_model
 
 
 # =====================================================================
 # SERVICE PIPELINE EXECUTION & ASSET EXPORT
 # =====================================================================
+
 def main():
     print("==================================================")
-    print("🚀 RUNNING CORE SEARCH SERVICE PIPELINE")
+    print("🚀 RUNNING CORE SEARCH SERVICE PIPELINE (LIBRARIES VERSION)")
     print("==================================================")
     
-    # Load Main Dataset
-    print("Loading data...")
-    df = pd.read_pickle("processed_documents.pkl")
-    print(f"Dataset Loaded: {len(df):,} documents found.")
+    # أسماء ملفات الكاش لحفظ النماذج الجاهزة
+    tfidf_file = "tfidf_assets.pkl"
+    bm25_file = "bm25_model.pkl"
+    meta_file = "metadata.pkl"
     
-    # Run Day 1 Tasks
-    inverted_index, doc_lengths, doc_term_freqs = build_inverted_index_and_stats(df)
-    
-    # Run Day 2 Tasks
-    idf_weights = compute_global_idf(df, inverted_index)
-    tfidf_vectors = compute_vsm_tfidf(doc_term_freqs, idf_weights)
-    
-    # Run Day 3 Tasks
-    bm25_idf = prepare_bm25_weights(df, inverted_index)
-    avg_doc_length = sum(doc_lengths.values()) / len(df)
-    print(f"Global Average Document Length: {round(avg_doc_length, 2)}")
+    # الفحص الذكي للملفات المحفوظة لمنع إعادة الحسابات المستهلكة للوقت
+    if os.path.exists(tfidf_file) and os.path.exists(bm25_file) and os.path.exists(meta_file):
+        print("⚡ [O(1) Speed] Found precomputed library assets! Loading files instantly...")
+        start_load = time.time()
+        
+        with open(tfidf_file, "rb") as f:
+            vectorizer, tfidf_matrix = pickle.load(f)
+        with open(bm25_file, "rb") as f:
+            bm25_model = pickle.load(f)
+        with open(meta_file, "rb") as f:
+            doc_ids = pickle.load(f)
+            
+        print(f"✅ Library assets loaded successfully in {time.time() - start_load:.4f} seconds! (Zero Lag)")
+        
+    else:
+        print("⚠️ Precomputed assets not found. Running full industry pipeline...")
+        
+        # تحميل الداتا الأساسية المجهزة مسبقاً
+        df = pd.read_pickle("processed_documents.pkl")
+        corpus = df["cleaned_text"].astype(str).tolist()
+        doc_ids = df["doc_id"].tolist()
+        
+        # 1. حساب الـ TF-IDF عبر مكتبة Sklearn
+        vectorizer, tfidf_matrix = train_tfidf_vectorizer(corpus)
+        
+        # 2. حساب الـ BM25 عبر مكتبة Rank-BM25
+        bm25_model = train_bm25_model(corpus)
+        
+        # حفظ المكاتب والنماذج المدربة لضمان عدم تكرار البناء عند تشغيل الواجهة
+        print("💾 Saving trained models for future instant loads...")
+        with open(tfidf_file, "wb") as f: 
+            pickle.dump((vectorizer, tfidf_matrix), f)
+        with open(bm25_file, "wb") as f: 
+            pickle.dump(bm25_model, f)
+        with open(meta_file, "wb") as f: 
+            pickle.dump(doc_ids, f)
+        print("✅ Models cached successfully.")
 
-    # Verification Test
+    # 🔍 تجربة محرك البحث الاحترافي للتأكد من السلامة والأداء
     print("\n--------------------------------------------------")
-    print("🔍 RUNNING LIVE SERVICE VERIFICATION")
+    print("🔍 RUNNING LIVE SERVICE VERIFICATION (RANK-BM25)")
     print("--------------------------------------------------")
-    test_query = "calcium channel"
-    print(f"Query: '{test_query}'")
     
-    start_search = time.time()
-    results = bm25_search_engine(
-        query=test_query,
-        inverted_index=inverted_index,
-        bm25_idf=bm25_idf,
-        avg_doc_length=avg_doc_length,
-        doc_lengths=doc_lengths,
-        doc_term_freqs=doc_term_freqs
-    )
-    duration = time.time() - start_search
-    print(f"✔ Search completed in {duration * 1000:.2f} ms. Found {len(results):,} docs.")
-    print("Top 3 results:")
-    for rank, (doc_id, score) in enumerate(results[:3], 1):
-        print(f"  Rank {rank} | Doc ID: {doc_id:<12} | Score: {score:.4f}")
-    print("--------------------------------------------------\n")
-
+    test_query = "calcium channel"
+    
+    # 1. معالجة الاستعلام الأساسية
+    processed_query = preprocess_text(test_query)
+    tokenized_query = processed_query.split()
+    
+    print(f"Original Query: '{test_query}' -> Processed: '{processed_query}'")
+    
+    # 🛡️ الفحص الذكي: حماية النظام من الاستعلامات الفارغة أو التي تحتوي على Stopwords فقط
+    if not tokenized_query:
+        print("⚠️ Warning: Query contains no valid terms after preprocessing. Returning 0 results.")
+        active_results = []
+    else:
+        start_search = time.time()
+        
+        # حساب سكور الـ BM25 للاستعلام الحالي لكل الوثائق دفعة واحدة بكفاءة عالية
+        doc_scores = bm25_model.get_scores(tokenized_query)
+        
+        # ربط السكور بالـ doc_id وترتيب النتائج تنازلياً
+        results = list(zip(doc_ids, doc_scores))
+        results = sorted(results, key=lambda x: x[1], reverse=True)
+        
+        # فلترة النتائج ذات الصلة (التي تملك سكور أكبر من صفر)
+        active_results = [r for r in results if r[1] > 0]
+        search_duration = (time.time() - start_search) * 1000
+        print(f"✔ Search completed in {search_duration:.2f} ms. Found {len(active_results):,} matching docs.")
+    
+    # عرض أعلى 5 نتائج للتأكد من صحة الحسابات والأرقام
+    print("\n🔝 Top 5 Results:")
+    if active_results:
+        for rank, (d_id, score) in enumerate(active_results[:5], 1):
+            print(f"   Rank {rank}: Doc ID = {d_id} | BM25 Score = {score:.4f}")
+    else:
+        print("   No matching documents found.")
 
 if __name__ == "__main__":
     main()
