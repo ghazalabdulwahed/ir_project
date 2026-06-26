@@ -18,12 +18,12 @@ from collections import Counter, defaultdict
 import streamlit as st
 from sklearn.metrics.pairwise import cosine_similarity
 
-
 import nltk
 from nltk.corpus import stopwords
 from sallynnnew_service import process_query_service, suggest_query
 from sentence_transformers import SentenceTransformer
 
+# =====================================================================
 
 @st.cache_resource
 def download_nltk_resources():
@@ -41,45 +41,6 @@ except Exception:
     stop_words = set()
 
 # =====================================================================
-
-class RealRAGService:
-    def __init__(self):
-        pass
-
-    def generate_smart_answer(self, query, top_retrieved_docs_text):
-        return f"""
-        بناءً على المستندات الطبية المسترجعة من فهرس الاستكشاف الفوري للاستعلام ولفظ الـ <i>"{query}"</i>، 
-        تبين أن الأبحاث السريرية تركز على آليات الفرز والمتابعة والتحكم بالمؤشرات الحيوية بشكل دقيق وثابت.
-        """
-
-# =====================================================================
-
-def calculate_precision_at_k(retrieved_ids, ground_truth_ids, k=10):
-    top_k_retrieved = retrieved_ids[:k]
-    relevant_retrieved = len(set(top_k_retrieved) & set(ground_truth_ids))
-    return relevant_retrieved / k if k > 0 else 0.0
-
-def calculate_recall_at_k(retrieved_ids, ground_truth_ids, k=10):
-    top_k_retrieved = retrieved_ids[:k]
-    relevant_retrieved = len(set(top_k_retrieved) & set(ground_truth_ids))
-    if len(ground_truth_ids) == 0: return 0.0
-    return relevant_retrieved / len(ground_truth_ids)
-
-def calculate_dcg_at_k(retrieved_ids, ground_truth_ids, k=10):
-    top_k_retrieved = retrieved_ids[:k]
-    dcg = 0.0
-    for i, doc_id in enumerate(top_k_retrieved, 1):
-        if doc_id in ground_truth_ids:
-            dcg += 1.0 / math.log2(i + 1)
-    return dcg
-
-def calculate_ndcg_at_k(retrieved_ids, ground_truth_ids, k=10):
-    dcg = calculate_dcg_at_k(retrieved_ids, ground_truth_ids, k)
-    ideal_retrieved = [doc_id for doc_id in retrieved_ids if doc_id in ground_truth_ids]
-    ideal_retrieved += [doc_id for doc_id in retrieved_ids if doc_id not in ground_truth_ids]
-    idcg = calculate_dcg_at_k(ideal_retrieved, ground_truth_ids, k)
-    if idcg == 0.0: return 0.0
-    return dcg / idcg
 
 def process_query_service(query, expand=True):
     from textblob import TextBlob
@@ -190,31 +151,28 @@ def load_all_services_optimized():
         for text in dataframe["cleaned_text"].dropna().astype(str):
             cached_freq_counter.update(text.lower().split())
 
-    rag_service_instance = RealRAGService()
-
     return (
         dataframe, cached_bm25_model, bert_model_instance, faiss_index,
-        doc_ids_list, text_lookup_dict, docid_to_matrix_row, rag_service_instance, cached_freq_counter
+        doc_ids_list, text_lookup_dict, docid_to_matrix_row, cached_freq_counter
     )
 
 (df, bm25_model, bert_model, faiss_index, 
- doc_ids, fast_text_lookup, docid_to_row, rag_service, cached_freq) = load_all_services_optimized()
+ doc_ids, fast_text_lookup, docid_to_row, cached_freq) = load_all_services_optimized()
 
 if 'word_freq' not in st.session_state:
     st.session_state.word_freq = cached_freq
 
 # ==========================================================
-# 📐 بناء القائمة الجانبية للتحكم بالإعدادات (Sidebar)
-# ==========================================================
+
 with st.sidebar:
-    st.markdown('<div class="sidebar-header-custom">⚙️ لوحة التحكم والمقاييس</div>', unsafe_allow_html=True)
+    st.markdown('<div class="sidebar-header-custom">⚙️ لوحة التحكم</div>', unsafe_allow_html=True)
     
     st.markdown('<div class="sidebar-section-card"><p class="section-label">🧠 اختيار محرك الاسترجاع:</p>', unsafe_allow_html=True)
     search_type = st.radio(
         "المحركات المتاحة:",
         [
-            "محرك BM25 التقليدي ", 
-            "محرك BERT الدلالي ", 
+            "محرك BM25 التقليدي", 
+            "محرك BERT الدلالي", 
             "نظام الترتيب المتسلسل Cascade (الهجين)",
             "نظام صهر الرتب الهجين (RRF)",
             "نموذج إعادة الترتيب الذكي Learning-to-Rank (LTR)"
@@ -245,7 +203,7 @@ with st.sidebar:
 # =====================================================================
 
 def api_gateway_complete(query, model_name, bm25_k1, bm25_b, expand_flag, rrf_k_val=60, cascade_top=500):
-    with st.spinner("📝 خطوة 1: جاري تشغيل المعالجة  وتوسيع الاستعلام بالـ NLP..."):
+    with st.spinner("📝 خطوة 1: جاري تشغيل المعالجة وتوسيع الاستعلام بالـ NLP..."):
         processed_query = process_query_service(query, expand=expand_flag)
     
     formatted_results = []
@@ -255,7 +213,7 @@ def api_gateway_complete(query, model_name, bm25_k1, bm25_b, expand_flag, rrf_k_
     bm25_model.b = bm25_b
 
     if not tokenized_query:
-        return [], processed_query, {}
+        return [], processed_query
 
     if "BM25" in model_name:
         with st.spinner("🔢 خطوة 2: جاري احتساب أوزان وتكرارات الفهرس المعكوس لـ BM25..."):
@@ -271,6 +229,9 @@ def api_gateway_complete(query, model_name, bm25_k1, bm25_b, expand_flag, rrf_k_
         with st.spinner("🧠 خطوة 2: جاري البحث الدلالي الفائق باستخدام FAISS..."):
             query_vec = bert_model.encode([processed_query])
             distances, top_indices = search_faiss_index(query_vec, faiss_index, top_k=10)
+            
+            distances = distances.flatten()
+            top_indices = top_indices.flatten()
             
         for rank, idx in enumerate(top_indices):
             doc_id = doc_ids[idx]
@@ -313,6 +274,8 @@ def api_gateway_complete(query, model_name, bm25_k1, bm25_b, expand_flag, rrf_k_
             query_vec = bert_model.encode([processed_query])
             distances, top_indices = search_faiss_index(query_vec, faiss_index, top_k=100)
             
+            top_indices = top_indices.flatten()
+            
             fused_scores = defaultdict(float)
             for rank, (doc_id, _) in enumerate(bm25_res_all, start=1):
                 fused_scores[doc_id] += 1.0 / (rrf_k_val + rank)
@@ -334,7 +297,7 @@ def api_gateway_complete(query, model_name, bm25_k1, bm25_b, expand_flag, rrf_k_
                 ltr_res = ltr_ranked_search(query, top_k=10)
             except Exception as e:
                 st.error(f"❌ فشل استدعاء خدمة LTR المضافة. تأكد من وجود الملفات. التفاصيل: {e}")
-                return [], processed_query, {}
+                return [], processed_query
                 
         for rank, (doc_id, score) in enumerate(ltr_res, 1):
             actual_text = fast_text_lookup.get(str(doc_id), "No text available.")
@@ -344,40 +307,39 @@ def api_gateway_complete(query, model_name, bm25_k1, bm25_b, expand_flag, rrf_k_
                 "text": str(actual_text)
             })
 
-    
-    return formatted_results, processed_query, {}
+    return formatted_results, processed_query
+
 
 # =====================================================================
 
 st.write("---")
-with st.form("search_form", clear_on_submit=False):
-    user_query = st.text_input(
-        "✍️ أدخل استعلامك باللغة الطبيعية للبحث:", 
-        placeholder="مثال: diabetes treatment or high blood pressure", 
-        key="search_input"
-    )
-    submit_button = st.form_submit_button("🚀 إطلاق المحرك المتكامل")
-
-current_rrf_k = rrf_k if "RRF" in search_type else 60
-current_cascade_top = cascade_top_bm25 if "Cascade" in search_type else 500
-
-if submit_button and user_query.strip() != "":
-    with st.spinner("🔍 جاري تشغيل خطوط معالجة الـ الـ API Gateway وسحب الفهارس..."):
-        results, final_query, metrics = api_gateway_complete(
-            user_query, search_type, k1, b, enable_expansion, 
-            rrf_k_val=current_rrf_k, cascade_top=current_cascade_top
-        )
-        st.session_state.search_results = (results, final_query, metrics)
-
-# =====================================================================
-
-tab1, tab2, tab3 = st.tabs(["🔍 محرك البحث والنتائج", "💬 نافذة محادثة الـ RAG التفاعلية", "📁 المجموعات الصنفية (Clustering)"])
+tab1, tab2 = st.tabs(["🔍 البحث والنتائج", "📁 المجموعات الصنفية (Clustering)"])
 
 # ---------------------------------------------------------------------
 
 with tab1:
+    with st.form("search_form", clear_on_submit=False):
+        user_query = st.text_input(
+            "✍️ أدخل استعلامك باللغة الطبيعية للبحث:", 
+            placeholder="مثال: diabetes treatment or high blood pressure", 
+            key="search_input"
+        )
+        submit_button = st.form_submit_button("🚀 إطلاق المحرك المتكامل")
+
+    current_rrf_k = rrf_k if "RRF" in search_type else 60
+    current_cascade_top = cascade_top_bm25 if "Cascade" in search_type else 500
+
+    if submit_button and user_query.strip() != "":
+        with st.spinner("🔍 جاري تشغيل خطوط معالجة الـ API Gateway وسحب الفهارس..."):
+            results, final_query = api_gateway_complete(
+                user_query, search_type, k1, b, enable_expansion, 
+                rrf_k_val=current_rrf_k, cascade_top=current_cascade_top
+            )
+            st.session_state.search_results = (results, final_query)
+
+    # عرض النتائج في حال وجودها
     if "search_results" in st.session_state:
-        results, final_query, metrics = st.session_state.search_results
+        results, final_query = st.session_state.search_results
         
         st.success("🎯 تمت عملية الاسترجاع بنجاح!")
         st.info(f"📝 النص بعد المعالجة والتوسيع: **{final_query}**")
@@ -402,27 +364,6 @@ with tab1:
 # ---------------------------------------------------------------------
 
 with tab2:
-    st.markdown("### 🤖 نافذة المحادثة التوليدية المدعومة بالسياق الحقيقي (RAG Chat UI)")
-    st.caption("ميزة إلزامية لتوليد الإجابات الذكية بناءً على الوثائق المسترجعة من فهرس الـ Vector Store")
-    
-    if "search_results" in st.session_state:
-        results, final_query, metrics = st.session_state.search_results
-        top_3_texts = [res["text"] for res in results[:3]]
-        smart_answer = rag_service.generate_smart_answer(final_query, top_3_texts)
-        
-        with st.chat_message("user", avatar="👤"):
-            st.markdown(f"**الاستعلام المرسل:** {user_query}")
-            
-        with st.chat_message("assistant", avatar="🧠"):
-            st.markdown("#### 💡 إجابة نظام الـ RAG التوليدي الذكي  ):")
-            st.markdown(smart_answer, unsafe_allow_html=True)
-            st.caption("⚡ تم التوليد الفوري الآمن O(1) بناءً على مستندات المطابقة الدلالية")
-    else:
-        st.info("💡 قم بإجراء بحث في الأعلى لتجربة محادثة الـ RAG التفاعلية بناءً على النتائج.")
-
-# ---------------------------------------------------------------------
-
-with tab3:
     st.write("### 📁 تجميع وتصنيف الوثائق دلالياً (Document Clustering)")
     st.write("فرز قاعدة البيانات دلالياً باستخدام خوارزمية **KMeans بـ 10 مجموعات صنفية** لفحص الأسئلة المتشابهة في مواضيع موحدة يدوياً وتلقائياً.")
     
