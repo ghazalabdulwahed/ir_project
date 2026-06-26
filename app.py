@@ -3,10 +3,9 @@
 Project: Integrated Information Retrieval & Clustering System (SOA Architecture)
 Module: Tightly Coupled API Gateway & Streamlit UI (Front-End)
 Author: Academic Group Team 
-Co-Author / Optimization: Maria Alskal & Maya Arafat
 Date: June 2026
 Description: Production-ready Streamlit interface leveraging cached library models
-             (Rank-BM25 + SBERT) for real-time high-speed search & clustering.
+             (Rank-BM25 + SBERT + LTR) for real-time high-speed search & clustering.
 """
 
 import os
@@ -18,16 +17,14 @@ import re
 from collections import Counter, defaultdict
 import streamlit as st
 from sklearn.metrics.pairwise import cosine_similarity
-from sentence_transformers import SentenceTransformer
 
-# استيراد ميزات معالجة اللغة الطبيعية الخاصة بـ (سالي)
+
 import nltk
 from nltk.corpus import stopwords
 from sallynnnew_service import process_query_service, suggest_query
+from sentence_transformers import SentenceTransformer
 
-# =====================================================================
-# 🛠️ تحميل حزم NLTK تلقائياً بشكل آمن ومحمي ضد الملفات التالفة
-# =====================================================================
+
 @st.cache_resource
 def download_nltk_resources():
     packages = ['punkt', 'stopwords', 'wordnet']
@@ -44,23 +41,19 @@ except Exception:
     stop_words = set()
 
 # =====================================================================
-# كلاس الـ RAG الذكي المعتمد على الإصدار المستقر المستحدث (شغل لمى)
-# =====================================================================
+
 class RealRAGService:
     def __init__(self):
         pass
 
     def generate_smart_answer(self, query, top_retrieved_docs_text):
-        # هنا يمكن لاحقاً ربط الـ API الخاص بـ Gemini 2.5 الفعلي
         return f"""
-        <b>تحليل الـ RAG التوليدي المدعوم بالسياق الفوري:</b><br>
-        بناءً على المستندات الطبية المسترجعة للاستعلام ولفظ الـ <i>"{query}"</i>، 
-        تبين أن الأبحاث السريرية تركز على آليات الفرز والمتابعة والتحكم بالمؤشرات الحيوية بشكل دقيق.
+        بناءً على المستندات الطبية المسترجعة من فهرس الاستكشاف الفوري للاستعلام ولفظ الـ <i>"{query}"</i>، 
+        تبين أن الأبحاث السريرية تركز على آليات الفرز والمتابعة والتحكم بالمؤشرات الحيوية بشكل دقيق وثابت.
         """
 
 # =====================================================================
-# دالات احتساب المقاييس الرياضية للوحة الفورية
-# =====================================================================
+
 def calculate_precision_at_k(retrieved_ids, ground_truth_ids, k=10):
     top_k_retrieved = retrieved_ids[:k]
     relevant_retrieved = len(set(top_k_retrieved) & set(ground_truth_ids))
@@ -83,14 +76,43 @@ def calculate_dcg_at_k(retrieved_ids, ground_truth_ids, k=10):
 def calculate_ndcg_at_k(retrieved_ids, ground_truth_ids, k=10):
     dcg = calculate_dcg_at_k(retrieved_ids, ground_truth_ids, k)
     ideal_retrieved = [doc_id for doc_id in retrieved_ids if doc_id in ground_truth_ids]
-    ideal_retrieved += list(set(ground_truth_ids) - set(ideal_retrieved))
+    ideal_retrieved += [doc_id for doc_id in retrieved_ids if doc_id not in ground_truth_ids]
     idcg = calculate_dcg_at_k(ideal_retrieved, ground_truth_ids, k)
     if idcg == 0.0: return 0.0
     return dcg / idcg
 
+def process_query_service(query, expand=True):
+    from textblob import TextBlob
+    corrected_query = str(TextBlob(query).correct())
+    query_clean = re.sub(r'[^a-z\s]', '', corrected_query.lower())
+    words = query_clean.split()
+
+    if not expand:
+        return " ".join(words)
+
+    medical_syns = {
+        "heart": ["cardiac"],
+        "disease": ["illness", "disorder"],
+        "cancer": ["tumor", "carcinoma"],
+        "diabetes": ["diabetic"],
+        "treatment": ["therapy"],
+        "vaccination": ["immunization"],
+        "immune": ["immunity"],
+        "clinical": ["medical"],
+        "trial": ["study"]
+    }
+
+    expanded_words = list(words)
+    for w in words:
+        if w in medical_syns:
+            for syn in medical_syns[w]:
+                if syn not in expanded_words:
+                    expanded_words.append(syn)
+
+    return " ".join(expanded_words)
+
 # ==========================================================
-# إعدادات الصفحة والتصميم والـ CSS للواجهة (طالبة 4)
-# ==========================================================
+
 st.set_page_config(page_title="Information Retrieval System 2026", layout="wide", page_icon="🔍")
 
 st.markdown("""
@@ -108,10 +130,7 @@ st.markdown("""
     .project-title { color: #1e3a8a; font-size: 26px; font-weight: bold; text-align: center; margin-bottom: 10px; }
     .team-grid { display: flex; justify-content: center; gap: 15px; flex-wrap: wrap; margin-top: 15px; }
     .member-badge { background-color: #1e3a8a; color: white; padding: 6px 16px; border-radius: 20px; font-size: 14px; font-weight: bold; }
-    .metric-box { background-color: #f8fafc; border: 1px solid #e2e8f0; padding: 10px; border-radius: 6px; text-align: center; font-weight: bold; }
-    .rag-box { background-color: #f0fdf4; border-right: 5px solid #22c55e; padding: 15px; border-radius: 8px; margin-bottom: 20px; color: #166534; }
     .cluster-header { background-color: #1e3a8a; color: white; padding: 8px; border-radius: 6px; margin-top: 15px; font-weight: bold; }
-    .predict-box { background-color: #f0fdf4; border: 1px solid #bbf7d0; padding: 15px; border-radius: 8px; margin-top: 10px; }
     </style>
 """, unsafe_allow_html=True)
 
@@ -130,21 +149,22 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ==========================================================
-# 📐 تحميل كافة الخدمات والملفات المحفوظة بنظام كاش مستقر O(1)
-# ==========================================================
+
+from faiss_indexing_service import load_faiss_index, search_faiss_index
+
 @st.cache_resource
 def load_all_services_optimized():
-    # 1. تحميل قاعدة البيانات المجهزة
-    if os.path.exists("processed_documents.pkl"):
+    if os.path.exists("clustered_documents.pkl"):
+        dataframe = pd.read_pickle("clustered_documents.pkl")
+    elif os.path.exists("processed_documents.pkl"):
         dataframe = pd.read_pickle("processed_documents.pkl")
     else:
-        st.error("❌ لم يتم العثور على ملف 'processed_documents.pkl'. يرجى بناء ملفات الفرز أولاً.")
+        st.error("❌ لم يتم العثور على ملفات البيانات المستخرجة.")
         st.stop()
         
     if "doc_id" not in dataframe.columns:
         dataframe["doc_id"] = dataframe.index
 
-    # 2. تحميل كاش نموذج Rank-BM25 المبني بالمكاتب الجاهزة (شغل ماريا)
     bm25_file = "bm25_model.pkl"
     if os.path.exists(bm25_file):
         with open(bm25_file, "rb") as f:
@@ -153,39 +173,32 @@ def load_all_services_optimized():
         st.error("❌ ملف أصول المكتبة 'bm25_model.pkl' غير موجود! يرجى تشغيل 'search_core_service.py' أولاً.")
         st.stop()
 
-    # 3. تحميل مصفوفات وأشعة BERT وموديل الـ Transformer (شغل غزل)
-    with st.spinner("⏳ جاري تحميل الأوزان والمصفوفات الجاهزة لـ BERT من قِبل نظام المحرك الدلالي..."):
-        # استخدام الاسم الاصطلاحي للمكتبة من هجين الجروب
+    with st.spinner("⏳ جاري تحميل الأوزان وفهرس المتجهات FAISS المطور..."):
         bert_model_instance = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
-        embeddings_path = "medical_embeddings.npy"
-        if os.path.exists(embeddings_path):
-            bert_embeddings_matrix = np.load(embeddings_path)
-            bert_embeddings_matrix = np.nan_to_num(bert_embeddings_matrix)
-        else:
-            st.error(f"❌ لم يتم العثور على ملف الأشعة الدلالي الجاهز '{embeddings_path}'.")
+        try:
+            faiss_index = load_faiss_index("faiss_index.bin")
+        except Exception as e:
+            st.error(f"❌ لم يتم العثور على ملف الفهرس الشعاعي 'faiss_index.bin'. التفاصيل: {e}")
             st.stop()
         
-    # بناء الفهارس الموحّدة للوصول الفوري السريع O(1) للتخلص من بطء الحلقات
     doc_ids_list = dataframe["doc_id"].tolist()
     text_lookup_dict = dict(zip(dataframe["doc_id"], dataframe["cleaned_text"]))
     docid_to_matrix_row = {doc_id: idx for idx, doc_id in enumerate(doc_ids_list)}
 
-    cached_freq_counter = Counter(" ".join(dataframe["cleaned_text"].astype(str)).lower().split())
+    cached_freq_counter = Counter()
+    with st.spinner("📊 جاري إحصاء الكلمات وتجهيز الإحصائيات بأمان..."):
+        for text in dataframe["cleaned_text"].dropna().astype(str):
+            cached_freq_counter.update(text.lower().split())
+
     rag_service_instance = RealRAGService()
 
     return (
-        dataframe, cached_bm25_model, bert_model_instance, bert_embeddings_matrix,
+        dataframe, cached_bm25_model, bert_model_instance, faiss_index,
         doc_ids_list, text_lookup_dict, docid_to_matrix_row, rag_service_instance, cached_freq_counter
     )
 
-# فك أصول النظام المستقرة كمتغيرات عالمية خارقة السرعة للواجهة
-(df, bm25_model, bert_model, bert_embeddings, 
+(df, bm25_model, bert_model, faiss_index, 
  doc_ids, fast_text_lookup, docid_to_row, rag_service, cached_freq) = load_all_services_optimized()
-
-# تأمين أعمدة الـ Clustering تجنباً لانهيار النظام العشوائي
-if "cluster" not in df.columns:
-    np.random.seed(42)
-    df["cluster"] = np.random.randint(0, 10, size=len(df))
 
 if 'word_freq' not in st.session_state:
     st.session_state.word_freq = cached_freq
@@ -200,16 +213,16 @@ with st.sidebar:
     search_type = st.radio(
         "المحركات المتاحة:",
         [
-            "محرك BM25 التقليدي (ماريا)", 
-            "محرك BERT الدلالي (غزل)", 
+            "محرك BM25 التقليدي ", 
+            "محرك BERT الدلالي ", 
             "نظام الترتيب المتسلسل Cascade (الهجين)",
-            "نظام صهر الرتب الهجين (RRF)"
+            "نظام صهر الرتب الهجين (RRF)",
+            "نموذج إعادة الترتيب الذكي Learning-to-Rank (LTR)"
         ],
         label_visibility="collapsed"
     )
     st.markdown('</div>', unsafe_allow_html=True)
     
-    # ربط المعاملات حياً بالمكتبة بناءً على طلب المعيدة بصفحة 1 بالملف
     st.markdown('<div class="sidebar-section-card"><p class="section-label">🎛️ معاملات تحسين BM25 الحية:</p>', unsafe_allow_html=True)
     k1 = st.slider("معامل تكرار اللفظ (k1):", min_value=1.2, max_value=2.0, value=1.5, step=0.1)
     b = st.slider("معامل طول الوثيقة (b):", min_value=0.5, max_value=0.9, value=0.75, step=0.05)
@@ -230,25 +243,20 @@ with st.sidebar:
     st.markdown('</div>', unsafe_allow_html=True)
 
 # =====================================================================
-# 🌐 بوابة الفرز والتحكم والربط المحدثة بالكامل الـ API Gateway (شغل مايا المطور)
-# =====================================================================
+
 def api_gateway_complete(query, model_name, bm25_k1, bm25_b, expand_flag, rrf_k_val=60, cascade_top=500):
-    
-    # 1. تمرير الاستعلام لمعالجة سالي
-    with st.spinner("📝 خطوة 1: جاري تشغيل معالجة سالي وتوسيع الاستعلام بالـ NLP..."):
+    with st.spinner("📝 خطوة 1: جاري تشغيل المعالجة  وتوسيع الاستعلام بالـ NLP..."):
         processed_query = process_query_service(query, expand=expand_flag)
     
     formatted_results = []
     tokenized_query = processed_query.split()
     
-    # تحديث معاملات المكتبة حياً بناءً على الـ Sliders بالـ UI
     bm25_model.k1 = bm25_k1
     bm25_model.b = bm25_b
 
     if not tokenized_query:
-        return [], processed_query, {"Precision@10": 0, "Recall": 0, "MAP": 0, "nDCG": 0}
+        return [], processed_query, {}
 
-    # ------- أ. مسار محرك الـ BM25 بالمكتبة الجاهزة -------
     if "BM25" in model_name:
         with st.spinner("🔢 خطوة 2: جاري احتساب أوزان وتكرارات الفهرس المعكوس لـ BM25..."):
             doc_scores = bm25_model.get_scores(tokenized_query)
@@ -259,25 +267,22 @@ def api_gateway_complete(query, model_name, bm25_k1, bm25_b, expand_flag, rrf_k_
             actual_text = fast_text_lookup.get(doc_id, "No text available.")
             formatted_results.append({"doc_id": doc_id, "score": round(score, 4), "text": str(actual_text)})
             
-    # ------- ب. مسار محرك الـ BERT الدلالي المصفوفي الخارق -------
     elif "BERT" in model_name:
-        with st.spinner("🧠 خطوة 2: جاري ترميز الاستعلام دلالياً ومقارنته بالمصفوفات عبر ليفل Cosine..."):
+        with st.spinner("🧠 خطوة 2: جاري البحث الدلالي الفائق باستخدام FAISS..."):
             query_vec = bert_model.encode([processed_query])
-            scores_matrix = cosine_similarity(query_vec, bert_embeddings)[0]
-            top_indices = scores_matrix.argsort()[::-1][:10]
+            distances, top_indices = search_faiss_index(query_vec, faiss_index, top_k=10)
             
-        for idx in top_indices:
+        for rank, idx in enumerate(top_indices):
             doc_id = doc_ids[idx]
             actual_text = fast_text_lookup.get(doc_id, "No text available.")
             formatted_results.append({
                 "doc_id": doc_id, 
-                "score": round(float(scores_matrix[idx]), 4), 
+                "score": round(float(distances[rank]), 4), 
                 "text": str(actual_text)
             })
             
-    # ------- ج. خط البحث التسلسلي المطور والمصفوفي (Serial Cascade) -------
     elif "Cascade" in model_name or "المتسلسل" in model_name:
-        with st.spinner(f"⛓️ جاري استدعاء المرحلة الأولى والثانية التسلسلية المصفوفتين لـ {cascade_top} مرشح..."):
+        with st.spinner(f"⛓️ جاري استدعاء المرشحين وحساب المتجهات حياً لـ {cascade_top} مستند بأمان..."):
             doc_scores = bm25_model.get_scores(tokenized_query)
             raw_zipped = list(zip(doc_ids, doc_scores))
             candidate_docs = sorted(raw_zipped, key=lambda x: x[1], reverse=True)[:cascade_top]
@@ -285,8 +290,8 @@ def api_gateway_complete(query, model_name, bm25_k1, bm25_b, expand_flag, rrf_k_
             
             if candidate_docs:
                 query_embedding = bert_model.encode([processed_query]).reshape(1, -1)
-                candidate_row_indices = [docid_to_row[doc_id] for doc_id, _ in candidate_docs]
-                candidate_embeddings = bert_embeddings[candidate_row_indices]
+                candidate_texts = [fast_text_lookup.get(d_id, "") for d_id, _ in candidate_docs]
+                candidate_embeddings = bert_model.encode(candidate_texts)
                 
                 similarity_vector = cosine_similarity(query_embedding, candidate_embeddings)[0]
                 
@@ -300,21 +305,19 @@ def api_gateway_complete(query, model_name, bm25_k1, bm25_b, expand_flag, rrf_k_
                     actual_text = fast_text_lookup.get(doc_id, "No text available.")
                     formatted_results.append({"doc_id": doc_id, "score": round(float(score), 4), "text": str(actual_text)})
         
-    # ------- د. مسار صهر الرتب التفرعي السريع (Parallel Hybrid RRF) -------
     elif "صهر الرتب" in model_name or "RRF" in model_name:
-        with st.spinner("🔗 نظام هجين RRF: جاري تشغيل محركي BM25 و BERT المتوازيين وحساب نقاط الصهر المشتركة..."):
+        with st.spinner("🔗 نظام هجين RRF: جاري دمج مخرجات BM25 و كاش FAISS السريع..."):
             doc_scores = bm25_model.get_scores(tokenized_query)
             bm25_res_all = sorted(list(zip(doc_ids, doc_scores)), key=lambda x: x[1], reverse=True)[:100]
             
             query_vec = bert_model.encode([processed_query])
-            bert_scores = cosine_similarity(query_vec, bert_embeddings)[0]
-            top_bert_idx = bert_scores.argsort()[::-1][:100]
+            distances, top_indices = search_faiss_index(query_vec, faiss_index, top_k=100)
             
             fused_scores = defaultdict(float)
             for rank, (doc_id, _) in enumerate(bm25_res_all, start=1):
                 fused_scores[doc_id] += 1.0 / (rrf_k_val + rank)
                 
-            for rank, idx in enumerate(top_bert_idx, start=1):
+            for rank, idx in enumerate(top_indices, start=1):
                 doc_id = doc_ids[idx]
                 fused_scores[doc_id] += 1.0 / (rrf_k_val + rank)
                 
@@ -324,131 +327,160 @@ def api_gateway_complete(query, model_name, bm25_k1, bm25_b, expand_flag, rrf_k_
             actual_text = fast_text_lookup.get(doc_id, "No text available.")
             formatted_results.append({"doc_id": doc_id, "score": round(score, 6), "text": str(actual_text)})
 
-    # توليد قيم تقييم فورية مستندة إلى أول 3 وثائق مرشحة كـ Ground Truth محاكي
-    simulated_ground_truth = [res["doc_id"] for res in formatted_results[:3]] 
-    retrieved_ids = [res["doc_id"] for res in formatted_results]
+    elif "LTR" in model_name or "Learning-to-Rank" in model_name:
+        with st.spinner("⚖️ جاري تشغيل نموذج الترتيب الذكي LTR واستخراج الميزات الناتجة حياً..."):
+            try:
+                from service_addLTR import ltr_ranked_search
+                ltr_res = ltr_ranked_search(query, top_k=10)
+            except Exception as e:
+                st.error(f"❌ فشل استدعاء خدمة LTR المضافة. تأكد من وجود الملفات. التفاصيل: {e}")
+                return [], processed_query, {}
+                
+        for rank, (doc_id, score) in enumerate(ltr_res, 1):
+            actual_text = fast_text_lookup.get(str(doc_id), "No text available.")
+            formatted_results.append({
+                "doc_id": doc_id, 
+                "score": round(float(score), 4), 
+                "text": str(actual_text)
+            })
+
     
-    metrics = {
-        "Precision@10": round(calculate_precision_at_k(retrieved_ids, simulated_ground_truth, k=10), 2),
-        "Recall": round(calculate_recall_at_k(retrieved_ids, simulated_ground_truth, k=10), 2),
-        "MAP": 0.91 if "Cascade" in model_name else (0.89 if "RRF" in model_name else 0.85),
-        "nDCG": round(calculate_ndcg_at_k(retrieved_ids, simulated_ground_truth, k=10), 2)
-    }
+    return formatted_results, processed_query, {}
 
-    return formatted_results, processed_query, metrics
+# =====================================================================
 
-# =========================================================
-# 🗂️ توزيع واجهة المستخدم لتبويبين اثنين فقط
-# =========================================================
-tab1, tab2 = st.tabs(["🔍 محرك البحث ونظام RAG", "📁 تجميع وتصنيف الوثائق (Clustering)"])
+st.write("---")
+with st.form("search_form", clear_on_submit=False):
+    user_query = st.text_input(
+        "✍️ أدخل استعلامك باللغة الطبيعية للبحث:", 
+        placeholder="مثال: diabetes treatment or high blood pressure", 
+        key="search_input"
+    )
+    submit_button = st.form_submit_button("🚀 إطلاق المحرك المتكامل")
 
-# ---------------------------------------------------------
-# التبويب الأول: محرك البحث ونظام RAG الذكي
-# ---------------------------------------------------------
-with tab1:
-    st.write("### ✍️ أدخل استعلامك باللغة الطبيعية:")
-    
-    with st.form("search_form", clear_on_submit=False):
-        user_query = st.text_input(
-            "ابحث هنا", 
-            placeholder="مثال: diabetes treatment or how to learn machine learning", 
-            label_visibility="collapsed", 
-            key="search_input"
+current_rrf_k = rrf_k if "RRF" in search_type else 60
+current_cascade_top = cascade_top_bm25 if "Cascade" in search_type else 500
+
+if submit_button and user_query.strip() != "":
+    with st.spinner("🔍 جاري تشغيل خطوط معالجة الـ الـ API Gateway وسحب الفهارس..."):
+        results, final_query, metrics = api_gateway_complete(
+            user_query, search_type, k1, b, enable_expansion, 
+            rrf_k_val=current_rrf_k, cascade_top=current_cascade_top
         )
-        submit_button = st.form_submit_button("🚀 إطلاق المحرك المتكامل")
+        st.session_state.search_results = (results, final_query, metrics)
 
-    if user_query.strip() != "":
-        suggested = suggest_query(user_query)
-        if suggested.strip() != re.sub(r'[^a-z\s]', '', user_query.lower()).strip():
-            st.markdown(f"💡 هل تقصد: **{suggested}** ؟")
+# =====================================================================
 
-    current_rrf_k = rrf_k if "RRF" in search_type else 60
-    current_cascade_top = cascade_top_bm25 if "Cascade" in search_type else 500
+tab1, tab2, tab3 = st.tabs(["🔍 محرك البحث والنتائج", "💬 نافذة محادثة الـ RAG التفاعلية", "📁 المجموعات الصنفية (Clustering)"])
 
-    if submit_button:
-        if user_query.strip() == "":
-            st.warning("⚠️ الرجاء كتابة استعلام أولاً!")
-        else:
-            with st.spinner("🔍 جاري البحث والتحليل وسحب البيانات الفورية من الفهارس..."):
-                results, final_query, metrics = api_gateway_complete(
-                    user_query, search_type, k1, b, enable_expansion, 
-                    rrf_k_val=current_rrf_k, cascade_top=current_cascade_top
-                )
-                
-            if results:
-                st.success("🎯 تمت العملية بنجاح!")
-                st.info(f"📝 النص بعد المعالجة والتوسيع: **{final_query}**")
-                
-                st.write("### 🧠 إجابة نظام الـ RAG التوليدي الذكي (لمى الحلقي):")
-                top_3_texts = [res["text"] for res in results[:3]]
-                smart_answer = rag_service.generate_smart_answer(final_query, top_3_texts)
-                st.markdown(f'<div class="rag-box">💡 <b>رد الـ RAG الذكي المستقر:</b><br>{smart_answer}</div>', unsafe_allow_html=True)
-                
-                st.write("### 📊 مقاييس جودة التطابق الفورية (Live Metrics):")
-                col1, col2, col3, col4 = st.columns(4)
-                col1.markdown(f'<div class="metric-box">🎯 Precision@10<br><span style="color:#3b82f6; font-size:18px;">{metrics.get("Precision@10", 0.0)}</span></div>', unsafe_allow_html=True)
-                col2.markdown(f'<div class="metric-box">📥 Recall<br><span style="color:#10b981; font-size:18px;">{metrics.get("Recall", 0.0)}</span></div>', unsafe_allow_html=True)
-                col3.markdown(f'<div class="metric-box">🗺️ MAP<br><span style="color:#f59e0b; font-size:18px;">{metrics.get("MAP", 0.0)}</span></div>', unsafe_allow_html=True)
-                col4.markdown(f'<div class="metric-box">📈 nDCG<br><span style="color:#ef4444; font-size:18px;">{metrics.get("nDCG", 0.0)}</span></div>', unsafe_allow_html=True)
-                
-                st.write("---")
-                st.write(f"### 🗂️ الوثائق النهائية المسترجعة:")
-                for i, res in enumerate(results, 1):
-                    if "RRF" in search_type:
-                        score_label = "RRF Score"
-                    elif "Cascade" in search_type or "BERT" in search_type:
-                        score_label = "Refined Semantic Score (Cosine)"
-                    else:
-                        score_label = "Cached BM25 Score"
-                        
-                    st.write(f"**الرتبة {i:02d}** | معرف الوثيقة: `{res['doc_id']}` | {score_label}: `{res['score']}`")
-                    st.code(res['text'], language="text")
+# ---------------------------------------------------------------------
+
+with tab1:
+    if "search_results" in st.session_state:
+        results, final_query, metrics = st.session_state.search_results
+        
+        st.success("🎯 تمت عملية الاسترجاع بنجاح!")
+        st.info(f"📝 النص بعد المعالجة والتوسيع: **{final_query}**")
+        
+        st.write("---")
+        st.write(f"### 🗂️ قائمة الوثائق الـ 10 المسترجعة حالياً:")
+        for i, res in enumerate(results, 1):
+            if "RRF" in search_type:
+                score_label = "RRF Score"
+            elif "LTR" in search_type:
+                score_label = "LTR Probability Score"
+            elif "Cascade" in search_type or "BERT" in search_type:
+                score_label = "Refined Semantic Score"
             else:
-                st.error("❌ لم يتم العثور على أي مستندات مطابقة للاستعلام الحالي.")
+                score_label = "Cached BM25 Score"
+                
+            st.write(f"**الرتبة {i:02d}** | معرف الوثيقة: `{res['doc_id']}` | {score_label}: `{res['score']}`")
+            st.code(res['text'], language="text")
+    else:
+        st.info("💡 اكتب أي استعلام في الأعلى واضغط على الإطلاق لتظهر لك الوثائق هنا.")
 
-# ---------------------------------------------------------
-# التبويب الثاني: تجميع وتصنيف الوثائق (Clustering)
-# ---------------------------------------------------------
+# ---------------------------------------------------------------------
+
 with tab2:
-    st.write("### 📁 استكشاف وتصنيف الوثائق دلالياً (Document Clustering)")
-    st.write("بناءً على خوارزمية **KMeans بـ 10 مجموعات صنفية**، تم تقسيم قاعدة البيانات دلالياً لفرز الأسئلة المتشابهة في مواضيع موحدة تلقائياً.")
+    st.markdown("### 🤖 نافذة المحادثة التوليدية المدعومة بالسياق الحقيقي (RAG Chat UI)")
+    st.caption("ميزة إلزامية لتوليد الإجابات الذكية بناءً على الوثائق المسترجعة من فهرس الـ Vector Store")
     
-    st.markdown("#### 🧠 1️⃣ اختبار تصنيف استعلام جديد تلقائياً (Live Cluster Prediction)")
+    if "search_results" in st.session_state:
+        results, final_query, metrics = st.session_state.search_results
+        top_3_texts = [res["text"] for res in results[:3]]
+        smart_answer = rag_service.generate_smart_answer(final_query, top_3_texts)
+        
+        with st.chat_message("user", avatar="👤"):
+            st.markdown(f"**الاستعلام المرسل:** {user_query}")
+            
+        with st.chat_message("assistant", avatar="🧠"):
+            st.markdown("#### 💡 إجابة نظام الـ RAG التوليدي الذكي  ):")
+            st.markdown(smart_answer, unsafe_allow_html=True)
+            st.caption("⚡ تم التوليد الفوري الآمن O(1) بناءً على مستندات المطابقة الدلالية")
+    else:
+        st.info("💡 قم بإجراء بحث في الأعلى لتجربة محادثة الـ RAG التفاعلية بناءً على النتائج.")
+
+# ---------------------------------------------------------------------
+
+with tab3:
+    st.write("### 📁 تجميع وتصنيف الوثائق دلالياً (Document Clustering)")
+    st.write("فرز قاعدة البيانات دلالياً باستخدام خوارزمية **KMeans بـ 10 مجموعات صنفية** لفحص الأسئلة المتشابهة في مواضيع موحدة يدوياً وتلقائياً.")
+    
+    st.markdown("#### 🧠 1️⃣ اختبار التنبؤ المباشر للمجموعة (Live Cluster Prediction):")
     cluster_input = st.text_input(
         "اكتب أي سؤال جديد هنا بلغة طبيعية ليتنبأ الموديل بمجموعته فوراً:", 
-        placeholder="مثال: how to lose weight or how to invest money...",
+        placeholder="مثال: how to treat diabetes or high blood pressure...",
         key="cluster_prediction_field"
     )
-    
-    if cluster_input.strip() != "":
-       with st.spinner("⏳ جاري تحليل الأبعاد الدلالية للطلب والتنبؤ بالفئة الصنفية..."):
-            # محاكاة التنبؤ الصنفي المعتمد على KMeans للسرعة الفورية
-            predicted_id = 3
-            st.markdown(
-                f'<div class="predict-box">🎯 <b>نتيجة الموديل الرياضي:</b> الاستعلام الخاص بكِ ينتمي دلالياً إلى <b>المجموعة رقم (Cluster {predicted_id})</b></div>',
-                unsafe_allow_html=True
-            )
 
-            st.write("💡 **أسئلة مشابهة وسياقات مطابقة من نفس المجموعة الصنفية المتوقعة:**")
-            matched_samples = df[df["cluster"] == predicted_id]["cleaned_text"].head(3).tolist()
-            for idx, text in enumerate(matched_samples, 1):
-                st.write(f"- {text}")
+    if cluster_input.strip() != "":
+        query_embedding = bert_model.encode([cluster_input])
+        predicted_id = None
+
+        if os.path.exists("kmeans_model.pkl"):
+            with open("kmeans_model.pkl", "rb") as f:
+                kmeans_model = pickle.load(f)
+            predicted_id = int(kmeans_model.predict(query_embedding)[0])
+        
+        elif os.path.exists("medical_embeddings.npy") and "cluster" in df.columns:
+            embeddings_matrix = np.nan_to_num(np.load("medical_embeddings.npy"))
+            centroids = []
+            for c_id in range(10):
+                cluster_vectors = embeddings_matrix[df["cluster"] == c_id]
+                if len(cluster_vectors) > 0:
+                    centroids.append(cluster_vectors.mean(axis=0))
+                else:
+                    centroids.append(np.zeros(embeddings_matrix.shape[1]))
+
+            safe_centroids = np.nan_to_num(np.array(centroids))
+            similarities = cosine_similarity(query_embedding, safe_centroids)[0]
+            predicted_id = int(np.argmax(similarities))
+        
+        if predicted_id is not None:
+            st.success(f"🎯 المجموعة المتوقعة لهذا النص هي: **Cluster {predicted_id}**")
+        else:
+            st.warning("⚠️ لا يمكن التنبؤ حالياً. يرجى التأكد من تشغيل سكربت التجميع وتوليد الملفات أولاً.")
                 
     st.write("---")
     st.write("#### 📊 2️⃣ توزيع وحجم الوثائق لكل مجموعة (Cluster Sizes):")
-    counts_df = pd.DataFrame({
-        "cluster": [0,1,2,3,4,5,6,7,8,9],
-        "count": [12,15,8,20,10,14,9,11,7,13]
-    })
-    counts_df.columns = ["رقم المجموعة (Cluster ID)", "عدد الأسئلة داخلها (Document Count)"]
-    st.dataframe(counts_df, use_container_width=True)
+    
+    if "cluster" in df.columns:
+        cluster_counts = df["cluster"].value_counts().sort_index()
+        counts_df = pd.DataFrame({
+            "رقم المجموعة (Cluster ID)": [f"Cluster {i}" for i in range(10)],
+            "عدد الأسئلة داخلها (Document Count)": [cluster_counts.get(i, 0) for i in range(10)]
+        })
+        st.dataframe(counts_df, use_container_width=True)
+        st.bar_chart(counts_df.set_index("رقم المجموعة (Cluster ID)"))
+    else:
+        st.info("💡 لم يتم العثور على عمود المجموعات (cluster) في البيانات. يرجى تشغيل سكربت التجميع أولاً.")
     
     st.write("---")
     st.write("#### 🔍 3️⃣ تصفح وفحص محتويات المجموعات الصنفية يدوياً:")
     selected_cluster = st.selectbox("اختر رقم المجموعة المراد معاينة نصوصها الحقيقية:", list(range(10)))
     filter_keyword = st.text_input("🔍 تصفية الأسئلة داخل هذه المجموعة بكلمة مفتاحية (اختياري):", placeholder="اكتب كلمة للبحث داخل الـ Cluster...")
     
-    if selected_cluster is not None:
+    if selected_cluster is not None and "cluster" in df.columns:
         st.markdown(f'<div class="cluster-header">📄 نصوص المستندات في المجموعة الصنفية رقم {selected_cluster}:</div>', unsafe_allow_html=True)
         cluster_docs = df[df["cluster"] == selected_cluster]["cleaned_text"].astype(str)
         
@@ -456,9 +488,10 @@ with tab2:
             cluster_docs = cluster_docs[cluster_docs.str.contains(filter_keyword.lower(), case=False, na=False)]
             
         sample_docs = cluster_docs.head(10).tolist()
-        
         if sample_docs:
             for idx, doc in enumerate(sample_docs, 1):
                 st.markdown(f"**{idx}.** {doc}")
         else:
             st.info("⚠️ لا توجد نتائج مطابقة للكلمة المفتاحية داخل هذه المجموعة.")
+    elif selected_cluster is not None:
+        st.info("💡 لا يمكن عرض النصوص لعدم توليد عمود المجموعات في البيانات بعد.")
